@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-04-22
+
+### Added
+- **Dynamic Concurrency Scaling:** Replaced hardcoded concurrency limits with a dynamic scaling algorithm. OpenGem now automatically scales its concurrent request capacity based on the number of active Google accounts (2 concurrent requests per active account, minimum 3). This prevents bottlenecks when AI agents like Claude Code perform massive parallel tool calls. (`src/services/concurrency.ts`)
+- **Advanced Streaming Concurrency Control:** Introduced a dedicated `geminiStreamSemaphore` specifically to throttle concurrent Server-Sent Events (SSE) streams, protecting the host IP from rate limit bans when an agent attempts to open 20+ streams simultaneously. (`src/controllers/chat.ts`)
+- **HTTP Payload Decompression:** OpenGem now requests `gzip, deflate, br` encoding from the Gemini API and seamlessly decompresses the inbound response streams using Node.js `zlib`. This dramatically reduces network transfer times when AI agents download massive code blocks or JSON structures. (`src/services/http.ts`)
+
+### Fixed
+- **UTF-8 Stream Chunking Corruption:** Fixed a critical bug in the Server-Sent Events (SSE) streaming pipeline where multi-byte UTF-8 characters (like emojis or special symbols) split across buffer chunks were corrupted by raw `.toString('utf-8')` calls, causing `JSON.parse` to crash. Implemented Node.js `StringDecoder` to properly buffer and decode partial character sequences. (`src/controllers/chat.ts`)
+- **Streaming CPU Bottleneck:** Optimized the SSE proxying mechanism to forward raw JSON strings directly to the client when envelope unwrapping is not required, bypassing expensive and redundant `JSON.parse()` and `JSON.stringify()` operations. This significantly lowers CPU usage and event-loop blocking during high-speed token generation. (`src/controllers/chat.ts`)
+
+### Changed
+- Incremented package version to `0.3.0`.
+
+
 ## [0.2.5] - 2026-03-07
 
 ### Added

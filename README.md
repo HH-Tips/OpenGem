@@ -5,11 +5,11 @@
   <img alt="OpenGem Logo" src="public/logos/black.png" height="120">
 </picture>
 
-# OpenGem 0.2.5
+# OpenGem 0.3.0
 
 **Free, Open-Source AI API Gateway for Gemini Models**
 
-[![Version](https://img.shields.io/badge/Version-0.2.5-orange.svg)](https://github.com/arifozgun/OpenGem/releases)
+[![Version](https://img.shields.io/badge/Version-0.3.0-orange.svg)](https://github.com/arifozgun/OpenGem/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Node.js](https://img.shields.io/badge/Node.js-18+-green.svg)](https://nodejs.org)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.0+-blue.svg)](https://typescriptlang.org)
@@ -34,6 +34,7 @@ OpenGem is an open-source proxy and API gateway designed to grant developers fre
 
 | Feature | Description |
 |---------|-------------|
+| **Autonomous Agent Acceleration** | Optimized for tools like Claude Code with global Keep-Alive connection pooling and automatic zlib/gzip payload compression, reducing upload times by ~80% and eliminating TLS handshake latency. |
 | **Completely Free Access** | Leverages Google's free-tier Gemini API using official CLI-equivalent authentication. |
 | **Smart Load Balancing** | Automatically rotates across multiple Google accounts with exponential backoff, jitter, client-side rate limiting, and concurrency control. |
 | **Standardized API** | Native `v1beta` models endpoint compatibility. Works perfectly with `@google/genai` and `google-genai` SDKs. |

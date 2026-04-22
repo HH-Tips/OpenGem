@@ -6,6 +6,8 @@
  * overwhelming the Gemini API endpoint from a single IP.
  */
 
+import { getReadyAccounts } from './account-manager';
+
 export async function runWithConcurrencyLimit<T>(params: {
     tasks: Array<() => Promise<T>>;
     limit: number;
@@ -50,11 +52,24 @@ export async function runWithConcurrencyLimit<T>(params: {
  * Prevents thundering herd by ensuring at most N requests are
  * in-flight from this process at any time.
  */
-class RequestSemaphore {
+export class RequestSemaphore {
     private active = 0;
     private queue: Array<() => void> = [];
 
-    constructor(private readonly maxConcurrent: number) { }
+    constructor(private maxConcurrent: number) { }
+
+    setMaxConcurrent(limit: number) {
+        this.maxConcurrent = limit;
+        this.flushQueue();
+    }
+
+    private flushQueue() {
+        while (this.active < this.maxConcurrent && this.queue.length > 0) {
+            this.active++;
+            const next = this.queue.shift();
+            if (next) next();
+        }
+    }
 
     async acquire(): Promise<void> {
         if (this.active < this.maxConcurrent) {
@@ -64,7 +79,7 @@ class RequestSemaphore {
 
         return new Promise<void>(resolve => {
             this.queue.push(() => {
-                this.active++;
+                // this.active is already incremented in flushQueue or release before calling resolve()
                 resolve();
             });
         });
@@ -72,8 +87,7 @@ class RequestSemaphore {
 
     release(): void {
         this.active--;
-        const next = this.queue.shift();
-        if (next) next();
+        this.flushQueue();
     }
 
     /**
@@ -97,7 +111,24 @@ class RequestSemaphore {
     }
 }
 
-// Global semaphore: max 3 concurrent Gemini API requests per process.
-// Prevents IP-level throttling — same server IP used for all accounts,
-// so keeping total concurrent outbound requests low is critical.
+// Global semaphore: max 3 concurrent Gemini API requests per process (default).
+// Will be dynamically updated based on active account count to support parallel tools.
 export const geminiRequestSemaphore = new RequestSemaphore(3);
+// Separate semaphore for streaming requests to prevent IP ban from too many concurrent streams
+export const geminiStreamSemaphore = new RequestSemaphore(3);
+
+export async function updateConcurrencyLimits() {
+    try {
+        const accounts = await getReadyAccounts();
+        const activeCount = accounts.length;
+        // Allow 2 concurrent connections per ready account, minimum 3.
+        const limit = Math.max(3, activeCount * 2);
+        
+        geminiRequestSemaphore.setMaxConcurrent(limit);
+        geminiStreamSemaphore.setMaxConcurrent(limit);
+        
+        // console.log(`[Concurrency] Limits updated to ${limit} (based on ${activeCount} accounts)`);
+    } catch (e) {
+        // console.error('[Concurrency] Failed to update limits', e);
+    }
+}

@@ -1,3 +1,4 @@
+import { StringDecoder } from 'string_decoder';
 import { Request, Response } from 'express';
 import { getDatabase } from '../services/database';
 import { nativeFetch, nativeFetchStream } from '../services/http';
@@ -12,7 +13,7 @@ import {
     markAccountSuccess,
     clearExpiredCooldowns,
 } from '../services/account-cooldown';
-import { geminiRequestSemaphore } from '../services/concurrency';
+import { geminiRequestSemaphore, geminiStreamSemaphore, updateConcurrencyLimits } from '../services/concurrency';
 import { getReadyAccounts, ensureFreshToken } from '../services/account-manager';
 
 // ─── Constants ────────────────────────────────────────────
@@ -165,6 +166,7 @@ export async function tryGenerateContentWithAccounts(
     generationConfig?: any, systemInstruction?: any, tools?: any[], toolConfig?: any
 ): Promise<any | null> {
     const db = getDatabase();
+    await updateConcurrencyLimits();
 
     for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
         const accounts = await selectReadyAccounts();
@@ -278,11 +280,13 @@ export async function tryGenerateContentWithAccounts(
 async function pipeStream(stream: any, res: Response, unwrapEnvelope: boolean): Promise<{ fullAnswer: string; tokenUsage: number }> {
     return new Promise((resolve, reject) => {
         let fullAnswer = '';
+        const decoder = new StringDecoder('utf8');
         let buffer = '';
         let tokenUsage = 0;
 
         stream.on('data', (chunk: Buffer) => {
-            buffer += chunk.toString('utf-8');
+            buffer += decoder.write(chunk);
+            
             const lines = buffer.split('\n');
             buffer = lines.pop() || '';
 
@@ -303,12 +307,14 @@ async function pipeStream(stream: any, res: Response, unwrapEnvelope: boolean): 
                     const usage = parsed.usageMetadata || parsed.response?.usageMetadata;
                     if (usage?.totalTokenCount) tokenUsage = usage.totalTokenCount;
 
-                    let forwarded = parsed;
-                    if (unwrapEnvelope && parsed.response) {
-                        forwarded = { ...parsed.response };
+                    // Fast path: Just forward the raw jsonStr if we dont need to unwrap it
+                    if (!unwrapEnvelope || !parsed.response) {
+                        res.write(`data: ${jsonStr}\n\n`);
+                    } else {
+                        let forwarded = { ...parsed.response };
                         if (parsed.usageMetadata) forwarded.usageMetadata = parsed.usageMetadata;
+                        res.write(`data: ${JSON.stringify(forwarded)}\n\n`);
                     }
-                    res.write(`data: ${JSON.stringify(forwarded)}\n\n`);
                 } catch {
                     res.write(line + '\n\n');
                 }
@@ -333,6 +339,7 @@ async function streamWithAccounts(
     headersAlreadySent: boolean  // true = admin chat (SSE headers sent before this call)
 ): Promise<void> {
     const db = getDatabase();
+    await updateConcurrencyLimits();
 
     for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
         const accounts = await selectReadyAccounts();
@@ -364,20 +371,22 @@ async function streamWithAccounts(
                     user_prompt_id: 'default-prompt', request: requestPayload,
                 });
 
-                let { status, stream } = await nativeFetchStream(`${GEMINI_API_BASE}:streamGenerateContent?alt=sse`, {
+                let { status, stream } = await geminiStreamSemaphore.run(() => nativeFetchStream(`${GEMINI_API_BASE}:streamGenerateContent?alt=sse`, {
                     method: 'POST', headers: buildHeaders(token),
                     body: JSON.stringify(geminiBody(usedModel)),
-                });
+                }));
 
                 if (status === 429) {
                     console.warn(`⏳ Stream: ${account.email} 429 on ${usedModel} — trying fallback...`);
                     const fallback = getFallbackModel(usedModel);
 
                     if (fallback) {
-                        const fbResult = await nativeFetchStream(`${GEMINI_API_BASE}:streamGenerateContent?alt=sse`, {
-                            method: 'POST', headers: buildHeaders(token),
-                            body: JSON.stringify(geminiBody(fallback)),
-                        });
+                        const fbResult = await geminiStreamSemaphore.run(() => 
+                            nativeFetchStream(`${GEMINI_API_BASE}:streamGenerateContent?alt=sse`, {
+                                method: 'POST', headers: buildHeaders(token),
+                                body: JSON.stringify(geminiBody(fallback)),
+                            })
+                        );
 
                         if (fbResult.status === 200) {
                             console.log(`✅ Stream fallback accepted by ${account.email} [${fallback}]`);
