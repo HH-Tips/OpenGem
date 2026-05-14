@@ -10,3 +10,7 @@ project_preview
 config.json
 # Local database (contains tokens and user data — never commit)
 data/
+
+# IDE settings
+.idea/
+src/**/*.js
