@@ -485,7 +485,8 @@ app.post('/api/admin/db-switch', requireAdmin, async (req, res) => {
 
 // --- GEMINI PROXY ROUTE ---
 
-import { handleGenerateContent, handleAdminChat } from './controllers/chat';
+import { handleGenerateContent, handleAdminChat, handleStreamGenerateContent } from './controllers/chat';
+import { listAvailableModels } from './services/gemini';
 
 // --- MODEL CONFIGURATION ROUTES ---
 
@@ -545,11 +546,152 @@ app.get(['/overview', '/accounts', '/keys', '/logs', '/docs', '/chat', '/setting
     res.sendFile(path.join(__dirname, '../public/index.html'));
 });
 
+app.get('/v1beta/models', requireApiKey, async (req, res, next) => {
+    try {
+        const modelNames = await listAvailableModels();
+        const response = {
+            "models": modelNames.map(name => ({
+                "name": `models/${name}`,
+                "version": "unknown",
+                "displayName": name,
+                "description": "Proxied Gemini model via OpenGem",
+                "inputTokenLimit": 2097152,
+                "outputTokenLimit": 8192,
+                "supportedGenerationMethods": [
+                    "generateContent",
+                    "countTokens"
+                ],
+                "temperature": 1.0,
+                "topP": 0.95,
+                "topK": 40
+            }))
+        };
+        return res.status(200).json(response);
+    } catch (err) {
+        console.error('Failed to list models:', err);
+        return res.status(500).json({ error: 'Internal Server Error' });
+    }
+});
+
 app.post('/v1beta/models/:model\\::action', apiLimiter, requireApiKey, (req, res, next) => {
     if (req.params.action === 'generateContent' || req.params.action === 'streamGenerateContent') {
         return handleGenerateContent(req, res);
     }
     return res.status(404).json({ error: 'Not found or unsupported action' });
+});
+
+// --- OPENAI COMPATIBILITY ENDPOINTS ---
+
+/**
+ * Maps OpenAI-style messages to Gemini-style contents.
+ * Also extracts the system message if present.
+ */
+function mapOpenAiToGemini(messages: any[]) {
+    const systemMessages = messages.filter((m: any) => m.role === 'system');
+    const contents = messages
+        .filter((m: any) => m.role !== 'system')
+        .map((m: any) => ({
+            role: m.role === 'assistant' ? 'model' : 'user',
+            parts: [{ text: m.content }]
+        }));
+    
+    let systemInstruction = undefined;
+    if (systemMessages.length > 0) {
+        systemInstruction = {
+            parts: [{ text: systemMessages.map(m => m.content).join('\n\n') }]
+        };
+    }
+    
+    return { contents, systemInstruction };
+}
+
+app.get('/v1/models', requireApiKey, async (req, res) => {
+    try {
+        const modelNames = await listAvailableModels();
+        res.json({
+            object: "list",
+            data: modelNames.map(name => ({
+                id: name,
+                object: "model",
+                created: Math.floor(Date.now() / 1000),
+                owned_by: "google"
+            }))
+        });
+    } catch (err) {
+        res.status(500).json({ error: 'Internal Server Error' });
+    }
+});
+
+app.post('/v1/chat/completions', apiLimiter, requireApiKey, async (req, res) => {
+    try {
+        const { model, messages, stream, temperature, max_tokens, stop } = req.body;
+
+        if (!messages || !Array.isArray(messages)) {
+            return res.status(400).json({ error: 'Invalid messages payload' });
+        }
+
+        // Convert OpenAI request to Gemini request with proper system instruction handling
+        const { contents, systemInstruction } = mapOpenAiToGemini(messages);
+        
+        req.body.contents = contents;
+        if (systemInstruction) {
+            req.body.systemInstruction = systemInstruction;
+        }
+
+        req.body.generationConfig = {
+            temperature: temperature ?? 1.0,
+            maxOutputTokens: max_tokens,
+            stopSequences: typeof stop === 'string' ? [stop] : stop,
+        };
+        req.params.model = model || 'gemini-3.1-pro-preview';
+
+        if (stream) {
+            return handleStreamGenerateContent(req, res, req.params.model, contents, req.body.generationConfig, systemInstruction, undefined, undefined, 'openai');
+        } else {
+            req.params.action = 'generateContent';
+            // We use the existing controller, but OpenAI expects a different response format.
+            // For a true "drop-in" we'd need a wrapper that transforms the final JSON.
+            // However, handleGenerateContent sends the response itself.
+            // To be truly compatible without refactoring everything, we can intercept the response
+            // OR simply point users to use the Gemini SDK with the OpenGem baseUrl as shown in docs.
+            
+            // For now, let's keep it simple: we provide the OpenAI endpoints 
+            // but we'll need a small wrapper to return OpenAI-formatted JSON.
+            
+            const originalJson = res.json;
+            res.json = function(data: any) {
+                if (data.candidates && data.candidates[0]) {
+                    const candidate = data.candidates[0];
+                    const openAiResponse = {
+                        id: `chatcmpl-${crypto.randomBytes(12).toString('hex')}`,
+                        object: "chat.completion",
+                        created: Math.floor(Date.now() / 1000),
+                        model: model,
+                        choices: [{
+                            index: 0,
+                            message: {
+                                role: "assistant",
+                                content: candidate.content.parts[0].text,
+                            },
+                            finish_reason: "stop"
+                        }],
+                        usage: {
+                            prompt_tokens: data.usageMetadata?.promptTokenCount || 0,
+                            completion_tokens: data.usageMetadata?.candidatesTokenCount || 0,
+                            total_tokens: data.usageMetadata?.totalTokenCount || 0
+                        }
+                    };
+                    return originalJson.call(this, openAiResponse);
+                }
+                return originalJson.call(this, data);
+            };
+
+            return handleGenerateContent(req, res);
+        }
+    } catch (err: any) {
+        console.error('OpenAI Compatibility Error:', err);
+        res.status(500).json({ error: 'Internal Server Error' });
+    }
 });
 
 const PORT = process.env.PORT || 3050;

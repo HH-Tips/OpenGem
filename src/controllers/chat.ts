@@ -277,12 +277,20 @@ export async function tryGenerateContentWithAccounts(
 
 // ─── Streaming: pipe SSE to client ───────────────────────
 
-async function pipeStream(stream: any, res: Response, unwrapEnvelope: boolean): Promise<{ fullAnswer: string; tokenUsage: number }> {
+async function pipeStream(
+    stream: any, 
+    res: Response, 
+    unwrapEnvelope: boolean,
+    outputFormat: 'gemini' | 'openai' = 'gemini',
+    openAiModel: string = 'unknown'
+): Promise<{ fullAnswer: string; tokenUsage: number }> {
     return new Promise((resolve, reject) => {
         let fullAnswer = '';
         const decoder = new StringDecoder('utf8');
         let buffer = '';
         let tokenUsage = 0;
+        const requestId = `chatcmpl-${crypto.randomBytes(12).toString('hex')}`;
+        const created = Math.floor(Date.now() / 1000);
 
         stream.on('data', (chunk: Buffer) => {
             buffer += decoder.write(chunk);
@@ -293,27 +301,55 @@ async function pipeStream(stream: any, res: Response, unwrapEnvelope: boolean): 
             for (const line of lines) {
                 if (!line.startsWith('data: ')) continue;
                 const jsonStr = line.substring(6).trim();
-                if (!jsonStr || jsonStr === '[DONE]') continue;
+                if (!jsonStr || jsonStr === '[DONE]') {
+                    if (outputFormat === 'openai') res.write('data: [DONE]\n\n');
+                    else res.write(line + '\n\n');
+                    continue;
+                }
                 try {
                     const parsed = JSON.parse(jsonStr);
                     const parts = parsed.candidates?.[0]?.content?.parts
                         || parsed.response?.candidates?.[0]?.content?.parts;
+                    
+                    let deltaText = '';
                     if (parts) {
                         for (const p of parts) {
-                            if (p.text) fullAnswer += p.text;
-                            else if (p.functionCall) fullAnswer += `\n\n[Tool Call: ${p.functionCall.name}]\n${JSON.stringify(p.functionCall.args, null, 2)}\n\n`;
+                            if (p.text) {
+                                fullAnswer += p.text;
+                                deltaText += p.text;
+                            }
+                            else if (p.functionCall) {
+                                const toolCallText = `\n\n[Tool Call: ${p.functionCall.name}]\n${JSON.stringify(p.functionCall.args, null, 2)}\n\n`;
+                                fullAnswer += toolCallText;
+                                deltaText += toolCallText;
+                            }
                         }
                     }
                     const usage = parsed.usageMetadata || parsed.response?.usageMetadata;
                     if (usage?.totalTokenCount) tokenUsage = usage.totalTokenCount;
 
-                    // Fast path: Just forward the raw jsonStr if we dont need to unwrap it
-                    if (!unwrapEnvelope || !parsed.response) {
-                        res.write(`data: ${jsonStr}\n\n`);
+                    if (outputFormat === 'openai') {
+                        const openAiDelta = {
+                            id: requestId,
+                            object: "chat.completion.chunk",
+                            created: created,
+                            model: openAiModel,
+                            choices: [{
+                                index: 0,
+                                delta: { content: deltaText },
+                                finish_reason: null
+                            }]
+                        };
+                        res.write(`data: ${JSON.stringify(openAiDelta)}\n\n`);
                     } else {
-                        let forwarded = { ...parsed.response };
-                        if (parsed.usageMetadata) forwarded.usageMetadata = parsed.usageMetadata;
-                        res.write(`data: ${JSON.stringify(forwarded)}\n\n`);
+                        // Fast path: Just forward the raw jsonStr if we dont need to unwrap it
+                        if (!unwrapEnvelope || !parsed.response) {
+                            res.write(`data: ${jsonStr}\n\n`);
+                        } else {
+                            let forwarded = { ...parsed.response };
+                            if (parsed.usageMetadata) forwarded.usageMetadata = parsed.usageMetadata;
+                            res.write(`data: ${JSON.stringify(forwarded)}\n\n`);
+                        }
                     }
                 } catch {
                     res.write(line + '\n\n');
@@ -322,6 +358,21 @@ async function pipeStream(stream: any, res: Response, unwrapEnvelope: boolean): 
         });
 
         stream.on('end', () => {
+            if (outputFormat === 'openai') {
+                const finalChunk = {
+                    id: requestId,
+                    object: "chat.completion.chunk",
+                    created: created,
+                    model: openAiModel,
+                    choices: [{
+                        index: 0,
+                        delta: {},
+                        finish_reason: "stop"
+                    }]
+                };
+                res.write(`data: ${JSON.stringify(finalChunk)}\n\n`);
+                res.write('data: [DONE]\n\n');
+            }
             res.end();
             resolve({ fullAnswer, tokenUsage });
         });
@@ -336,7 +387,8 @@ async function streamWithAccounts(
     generationConfig: any, systemInstruction: any,
     tools: any[] | undefined, toolConfig: any,
     res: Response,
-    headersAlreadySent: boolean  // true = admin chat (SSE headers sent before this call)
+    headersAlreadySent: boolean,  // true = admin chat (SSE headers sent before this call)
+    outputFormat: 'gemini' | 'openai' = 'gemini'
 ): Promise<void> {
     const db = getDatabase();
     await updateConcurrencyLimits();
@@ -431,12 +483,12 @@ async function streamWithAccounts(
                     });
                 }
 
-                if (usedModel !== model) {
+                if (usedModel !== model && outputFormat !== 'openai') {
                     res.write(`data: ${JSON.stringify({ openGemModelChange: usedModel })}\n\n`);
                 }
 
                 try {
-                    const { fullAnswer, tokenUsage } = await pipeStream(stream, res, !headersAlreadySent);
+                    const { fullAnswer, tokenUsage } = await pipeStream(stream, res, !headersAlreadySent, outputFormat, model);
                     markAccountSuccess(account.email);
                     await db.incrementAccountStats(account.email, { successful: 1, failed: 0, tokens: tokenUsage });
                     logRequest(db, account.email, contents, fullAnswer, tokenUsage, true, systemInstruction, usedModel, usedModel !== model);
@@ -480,11 +532,12 @@ async function streamWithAccounts(
 
 // ─── Public streaming (proxy) ─────────────────────────────
 
-function handleStreamGenerateContent(
+export function handleStreamGenerateContent(
     req: Request, res: Response, model: string, contents: any[],
-    generationConfig?: any, systemInstruction?: any, tools?: any[], toolConfig?: any
+    generationConfig?: any, systemInstruction?: any, tools?: any[], toolConfig?: any,
+    outputFormat: 'gemini' | 'openai' = 'gemini'
 ): void {
-    streamWithAccounts(model, contents, generationConfig, systemInstruction, tools, toolConfig, res, false);
+    streamWithAccounts(model, contents, generationConfig, systemInstruction, tools, toolConfig, res, false, outputFormat);
 }
 
 // ─── Admin chat ───────────────────────────────────────────

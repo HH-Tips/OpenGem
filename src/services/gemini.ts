@@ -215,3 +215,74 @@ export async function checkAccountTier(accessToken: string): Promise<{ isPro: bo
     }
     return { isPro: false, tierName: 'Unknown' };
 }
+
+// --- Dynamic Model Fetching ---
+
+const MODELS_SOURCE_URL = 'https://raw.githubusercontent.com/google-gemini/gemini-cli/refs/heads/main/packages/core/src/config/models.ts';
+let cachedModels: string[] | null = null;
+let lastFetchedAt = 0;
+const CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour
+
+export async function listAvailableModels(): Promise<string[]> {
+    const now = Date.now();
+    if (cachedModels && (now - lastFetchedAt < CACHE_TTL_MS)) {
+        return cachedModels;
+    }
+
+    try {
+        console.log('🔄 Fetching available models from GitHub...');
+        const response = await nativeFetch(MODELS_SOURCE_URL);
+        if (!response.ok) throw new Error(`Failed to fetch models: ${response.status}`);
+        
+        const text = await response.text();
+        
+        // 1. Extract all constants into a map
+        const constants: Record<string, string> = {};
+        const constRegex = /export const ([A-Z0-9_]+)\s*=\s*['"]([^'"]+)['"]/g;
+        let match;
+        while ((match = constRegex.exec(text)) !== null) {
+            constants[match[1]] = match[2];
+        }
+
+        // 2. Locate the VALID_GEMINI_MODELS Set
+        const setMatch = text.match(/export const VALID_GEMINI_MODELS = new Set\(\[([\s\S]*?)\]\)/);
+        if (!setMatch) throw new Error('Could not find VALID_GEMINI_MODELS set in source');
+
+        const setContent = setMatch[1];
+        const models: string[] = [];
+        
+        // 3. Parse items in the set
+        setContent.split(',').forEach(item => {
+            const trimmed = item.trim();
+            if (!trimmed) return;
+            
+            // If it's a constant reference
+            if (constants[trimmed]) {
+                models.push(constants[trimmed]);
+            } 
+            // If it's a literal string (shouldn't happen in the current file but for safety)
+            else if (trimmed.startsWith("'") || trimmed.startsWith('"')) {
+                models.push(trimmed.slice(1, -1));
+            }
+        });
+
+        if (models.length > 0) {
+            cachedModels = Array.from(new Set(models)); // Deduplicate
+            lastFetchedAt = now;
+            console.log(`✅ Loaded ${cachedModels.length} models from source.`);
+            return cachedModels;
+        }
+    } catch (err) {
+        console.error('❌ Failed to fetch models from GitHub, using fallback:', err);
+    }
+
+    // Return hardcoded fallback if fetch fails
+    return [
+        'gemini-3-pro-preview',
+        'gemini-3.1-pro-preview',
+        'gemini-3-flash-preview',
+        'gemini-2.5-pro',
+        'gemini-2.5-flash',
+        'gemini-2.5-flash-lite'
+    ];
+}

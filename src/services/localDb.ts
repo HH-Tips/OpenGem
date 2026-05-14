@@ -318,9 +318,7 @@ export const localDb: IDatabase = {
             .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
             .slice(0, limitCount)
             .map(l => ({
-                ...(l.systemInstruction && { systemInstruction: l.systemInstruction }),
-                ...(l.model && { model: l.model }),
-                ...(l.isFallback !== undefined && { isFallback: l.isFallback }),
+                ...l,
                 timestamp: new Date(l.timestamp),
             }));
     },

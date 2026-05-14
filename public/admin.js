@@ -792,6 +792,16 @@ function renderLogsBatch() {
             answerTd.appendChild(errText);
             answerTd.title = log.answer || '';
         } else {
+            if (log.isFallback) {
+                const fallbackSpan = document.createElement('span');
+                fallbackSpan.className = 'badge';
+                fallbackSpan.style.backgroundColor = 'var(--orange-bg)';
+                fallbackSpan.style.color = 'var(--orange)';
+                fallbackSpan.style.marginRight = '6px';
+                fallbackSpan.textContent = 'Fallback';
+                answerTd.appendChild(fallbackSpan);
+            }
+
             // For the table preview, try to extract the non-thinking part if possible
             let previewText = log.answer || '—';
             if (previewText.includes('\\n\\n')) {
@@ -850,7 +860,9 @@ function showLogDetail(log) {
     } catch { }
 
     const statusBadge = log.success
-        ? '<span class="badge badge-active">Success</span>'
+        ? (log.isFallback 
+            ? '<span class="badge" style="background: var(--orange-bg); color: var(--orange);">Success (Fallback)</span>' 
+            : '<span class="badge badge-active">Success</span>')
         : '<span class="badge badge-inactive">Error</span>';
 
     const isTask = log.question && (
