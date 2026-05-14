@@ -1,6 +1,6 @@
 import fs from 'fs';
 import path from 'path';
-import crypto from 'crypto';
+import * as crypto from 'crypto';
 import bcrypt from 'bcrypt';
 
 const CONFIG_PATH = path.join(__dirname, '../../config.json');

@@ -1,5 +1,6 @@
 import { StringDecoder } from 'string_decoder';
 import { Request, Response } from 'express';
+import * as crypto from 'crypto';
 import { getDatabase } from '../services/database';
 import { nativeFetch, nativeFetchStream } from '../services/http';
 import { GEMINI_API_BASE, DEFAULT_MODEL, getFirstFallbackModel, getSecondFallbackModel } from '../services/gemini';

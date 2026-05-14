@@ -7,7 +7,7 @@ import cookieParser from 'cookie-parser';
 import rateLimit from 'express-rate-limit';
 import jwt from 'jsonwebtoken';
 import bcrypt from 'bcrypt';
-import crypto from 'crypto';
+import * as crypto from 'crypto';
 import { getDatabase, invalidateDbCache } from './services/database';
 import { requireAdmin } from './middleware/auth';
 import { isConfigured, getConfig, saveConfig, generateJwtSecret, generateApiKey, verifyUsername, switchDatabaseBackend, updateModels } from './services/config';
@@ -646,7 +646,7 @@ app.post('/v1/chat/completions', apiLimiter, requireApiKey, async (req, res) => 
         req.params.model = model || 'gemini-3.1-pro-preview';
 
         if (stream) {
-            return handleStreamGenerateContent(req, res, req.params.model, contents, req.body.generationConfig, systemInstruction, undefined, undefined, 'openai');
+            return handleStreamGenerateContent(req, res, req.params.model as string, contents, req.body.generationConfig, systemInstruction, undefined, undefined, 'openai');
         } else {
             req.params.action = 'generateContent';
             // We use the existing controller, but OpenAI expects a different response format.

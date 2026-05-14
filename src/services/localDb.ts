@@ -15,7 +15,7 @@
 
 import fs from 'fs';
 import path from 'path';
-import crypto from 'crypto';
+import * as crypto from 'crypto';
 import { encrypt, decrypt } from './config';
 import type { IDatabase, Account, ApiKey, RequestLog, DbStats } from './database';
 

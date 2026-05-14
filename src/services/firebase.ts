@@ -18,7 +18,7 @@ import {
 } from 'firebase/firestore';
 import { getConfig, encrypt, decrypt } from './config';
 import type { IDatabase, Account, ApiKey, RequestLog, DbStats } from './database';
-import crypto from 'crypto';
+import * as crypto from 'crypto';
 
 // Polyfill fetch for Firebase if needed (especially for Node.js environments lacking global fetch)
 if (!globalThis.fetch) {

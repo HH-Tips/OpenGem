@@ -1,4 +1,4 @@
-import crypto from 'crypto';
+import * as crypto from 'crypto';
 
 import { nativeFetch } from './http';
 import { isConfigured, getConfig } from './config';
